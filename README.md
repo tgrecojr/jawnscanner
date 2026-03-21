@@ -89,7 +89,7 @@ docker run -d -p 9101:9101 ghcr.io/tgrecojr/jawnscanner:latest
 
 ### From Source
 
-Requires Rust 1.75+.
+Requires Rust 1.83+ (developed against 1.94).
 
 ```bash
 cargo build --release

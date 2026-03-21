@@ -5,7 +5,6 @@
     ":disableRateLimiting",
     ":dependencyDashboard",
     ":semanticCommits",
-    ":enablePreCommit",
     "docker:enableMajor",
     ":timezone(America/New_York)"
   ],
@@ -21,88 +20,50 @@
   "platformAutomerge": true,
   "packageRules": [
     {
-      "matchCategories": [
-        "docker"
-      ],
+      "description": "Pin Docker image digests for reproducible builds",
+      "matchCategories": ["docker"],
       "pinDigests": true
     },
     {
-      "description": "Auto-merge non-major updates for stable images",
-      "matchDatasources": [
-        "docker"
-      ],
-      "matchUpdateTypes": [
-        "minor",
-        "patch",
-        "digest"
-      ],
+      "description": "Auto-merge non-major Docker updates",
+      "matchDatasources": ["docker"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
       "automerge": true,
       "automergeType": "branch"
     },
     {
-      "description": "Group all minor and patch updates together",
-      "matchUpdateTypes": [
-        "minor",
-        "patch"
-      ],
-      "groupName": "all non-major dependencies",
-      "groupSlug": "all-minor-patch",
+      "description": "Group all Rust minor and patch dependency updates",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "rust dependencies (non-major)",
+      "groupSlug": "rust-minor-patch",
       "automerge": true
     },
     {
       "description": "Disable auto-merge for major updates - need review",
-      "matchUpdateTypes": [
-        "major"
-      ],
+      "matchUpdateTypes": ["major"],
       "automerge": false,
-      "labels": [
-        "major-update"
-      ]
-    },
-    {
-      "description": "Auto-merge digest updates daily",
-      "matchUpdateTypes": [
-        "digest"
-      ],
-      "automerge": true,
-      "schedule": [
-        "at any time"
-      ],
-      "minimumReleaseAge": null
+      "labels": ["major-update"]
     },
     {
       "description": "Stability period for minor/patch before auto-merge",
-      "matchUpdateTypes": [
-        "minor",
-        "patch"
-      ],
+      "matchUpdateTypes": ["minor", "patch"],
       "minimumReleaseAge": "3 days"
     },
     {
-      "description": "Common stable images - faster auto-merge",
-      "matchDatasources": [
-        "docker"
-      ],
-      "matchPackageNames": [
-        "postgres",
-        "mariadb",
-        "nginx",
-        "redis",
-        "traefik"
-      ],
-      "minimumReleaseAge": "1 day"
+      "description": "Auto-merge digest updates without delay",
+      "matchUpdateTypes": ["digest"],
+      "automerge": true,
+      "schedule": ["at any time"],
+      "minimumReleaseAge": null
     }
   ],
   "vulnerabilityAlerts": {
     "enabled": true,
-    "labels": [
-      "security"
-    ]
+    "labels": ["security"]
   },
   "lockFileMaintenance": {
     "enabled": true,
-    "schedule": [
-      "before 4am on monday"
-    ]
+    "schedule": ["before 4am on monday"]
   }
 }
