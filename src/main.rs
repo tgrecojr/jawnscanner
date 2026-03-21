@@ -149,17 +149,37 @@ async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
     };
 
     let wait_times: HashMap<u64, f64> = match api_result {
-        Ok(resp) => match resp.json::<PhlResponse>().await {
-            Ok(data) => {
-                scrape_success.set(1.0);
-                data.content.rows.iter().map(|r| (r.0, r.1)).collect()
+        Ok(resp) => {
+            let status = resp.status();
+            match resp.text().await {
+                Ok(body) => match serde_json::from_str::<PhlResponse>(&body) {
+                    Ok(data) => {
+                        scrape_success.set(1.0);
+                        data.content.rows.iter().map(|r| (r.0, r.1)).collect()
+                    }
+                    Err(e) => {
+                        let truncated: String = body.chars().take(500).collect();
+                        warn!(
+                            status = %status,
+                            error = %e,
+                            body = %truncated,
+                            "Failed to parse PHL API response"
+                        );
+                        scrape_success.set(0.0);
+                        HashMap::new()
+                    }
+                },
+                Err(e) => {
+                    warn!(
+                        status = %status,
+                        error = %e,
+                        "Failed to read PHL API response body"
+                    );
+                    scrape_success.set(0.0);
+                    HashMap::new()
+                }
             }
-            Err(e) => {
-                warn!("Failed to parse PHL API response: {}", e);
-                scrape_success.set(0.0);
-                HashMap::new()
-            }
-        },
+        }
         Err(e) => {
             warn!("Failed to fetch PHL API: {}", e);
             scrape_success.set(0.0);
