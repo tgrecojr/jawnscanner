@@ -104,7 +104,7 @@ All configuration is via environment variables:
 |---|---|---|
 | `LISTEN_PORT` | `9101` | Port for the HTTP server |
 | `PHL_API_URL` | `https://www.phl.org/phllivereach/metrics` | PHL wait times API endpoint |
-| `PHL_JS_URL` | `https://www.phl.org/modules/custom/phl_wait_api/js/wait-api.js` | PHL schedule JS URL |
+| `PHL_PAGE_URL` | `https://www.phl.org/` | PHL homepage URL for status parsing |
 | `RUST_LOG` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
 
 ### Docker example with custom config
@@ -190,12 +190,12 @@ cargo fmt
 ## How It Works
 
 1. Prometheus scrapes the `/metrics` endpoint on the configured interval
-2. JawnScanner fetches the checkpoint schedule from PHL's `wait-api.js` and wait time data from the PHL API concurrently
-3. The dynamic schedule reflects real-time operational status (e.g., checkpoints closed for the day or temporarily shut down)
+2. JawnScanner fetches the PHL homepage HTML and the wait time API concurrently
+3. Open/closed status is parsed from server-rendered CSS classes (`nu-open`/`nu-closed`) in the HTML — this reflects real-time operational closures
 4. Open checkpoints get both a wait time and an `open=1` gauge
 5. Closed checkpoints only get an `open=0` gauge (no wait time metric emitted)
-6. If the schedule JS is unreachable, hardcoded default hours are used as a fallback
-7. If the wait time API is unreachable, `phl_scrape_success` is set to `0` and open/closed status is still reported
+6. If the homepage is unreachable, all checkpoints default to open
+7. If the wait time API is unreachable, `phl_scrape_success` is set to `0`
 
 ## License
 
