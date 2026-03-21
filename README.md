@@ -1,6 +1,6 @@
 # JawnScanner
 
-A Prometheus exporter that tracks TSA security checkpoint wait times at **Philadelphia International Airport (PHL)**.
+A Prometheus exporter that tracks TSA security checkpoint wait times at the **Philadelphia International Airport (PHL)**.
 
 JawnScanner fetches real-time wait time data from the PHL airport API and exposes it as Prometheus metrics, making it easy to build Grafana dashboards, set up alerts, and analyze historical trends.
 
