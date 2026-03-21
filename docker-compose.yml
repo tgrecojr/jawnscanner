@@ -1,0 +1,38 @@
+services:
+  jawnscanner:
+    build: .
+    # Or use the pre-built image:
+    # image: ghcr.io/tgrecojr/jawnscanner:latest
+    ports:
+      - "9101:9101"
+    environment:
+      - LISTEN_PORT=9101
+      - RUST_LOG=info
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - jawnscanner
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  prometheus_data:
+  grafana_data:

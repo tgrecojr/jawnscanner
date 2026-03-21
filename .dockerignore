@@ -1,0 +1,12 @@
+.git/
+target/
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+.DS_Store
+*.md
+.claude/
+.playwright-mcp/
+network_requests.txt
