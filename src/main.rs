@@ -1,6 +1,4 @@
 use axum::{extract::State, http::header, response::IntoResponse, routing::get, Router};
-use chrono::Timelike;
-use chrono_tz::America::New_York;
 use prometheus::{Encoder, GaugeVec, Opts, Registry, TextEncoder};
 use regex::Regex;
 use reqwest::Client;
@@ -12,100 +10,57 @@ use tracing::{info, warn};
 
 const DEFAULT_PORT: u16 = 9101;
 const DEFAULT_API_URL: &str = "https://www.phl.org/phllivereach/metrics";
-const DEFAULT_JS_URL: &str = "https://www.phl.org/modules/custom/phl_wait_api/js/wait-api.js";
-
-struct Schedule {
-    open_hour: u32,
-    open_min: u32,
-    close_hour: u32,
-    close_min: u32,
-}
-
-impl Schedule {
-    fn is_open(&self, hour: u32, minute: u32) -> bool {
-        let now = hour * 60 + minute;
-        let open = self.open_hour * 60 + self.open_min;
-        let close = self.close_hour * 60 + self.close_min;
-        if open == close {
-            return false;
-        }
-        now >= open && now < close
-    }
-}
+const DEFAULT_PAGE_URL: &str = "https://www.phl.org/";
 
 struct CheckpointDef {
     zone_id: u64,
     terminal: &'static str,
-    schedule_key: &'static str,
-    default_open: (u32, u32),
-    default_close: (u32, u32),
 }
 
 impl CheckpointDef {
-    const fn new(
-        zone_id: u64,
-        terminal: &'static str,
-        schedule_key: &'static str,
-        default_open: (u32, u32),
-        default_close: (u32, u32),
-    ) -> Self {
-        Self {
-            zone_id,
-            terminal,
-            schedule_key,
-            default_open,
-            default_close,
-        }
-    }
-
-    fn default_schedule(&self) -> Schedule {
-        Schedule {
-            open_hour: self.default_open.0,
-            open_min: self.default_open.1,
-            close_hour: self.default_close.0,
-            close_min: self.default_close.1,
-        }
+    const fn new(zone_id: u64, terminal: &'static str) -> Self {
+        Self { zone_id, terminal }
     }
 }
 
 const CHECKPOINTS: &[CheckpointDef] = &[
-    CheckpointDef::new(4377, "A-West", "tA", (5, 0), (22, 15)),
-    CheckpointDef::new(4368, "A-East", "tAe", (4, 15), (22, 15)),
-    CheckpointDef::new(4386, "A-East TSA Pre", "tAepre", (4, 15), (18, 30)),
-    CheckpointDef::new(5047, "B", "tB", (3, 30), (21, 30)),
-    CheckpointDef::new(5052, "C", "tC", (4, 15), (20, 0)),
-    CheckpointDef::new(3971, "D/E", "tDE", (3, 0), (22, 30)),
-    CheckpointDef::new(4126, "D/E TSA Pre", "tDEpre", (3, 45), (20, 0)),
-    CheckpointDef::new(5068, "F", "tF", (4, 30), (21, 15)),
+    CheckpointDef::new(4377, "A-West"),
+    CheckpointDef::new(4368, "A-East"),
+    CheckpointDef::new(4386, "A-East TSA Pre"),
+    CheckpointDef::new(5047, "B"),
+    CheckpointDef::new(5052, "C"),
+    CheckpointDef::new(3971, "D/E"),
+    CheckpointDef::new(4126, "D/E TSA Pre"),
+    CheckpointDef::new(5068, "F"),
 ];
 
-fn parse_schedules(js_content: &str) -> HashMap<String, Schedule> {
-    let mut schedules = HashMap::new();
+/// Parses the PHL homepage HTML for checkpoint open/closed status.
+/// PHL server-renders `class="status nu-open"` or `class="status nu-closed"`
+/// for each checkpoint in the Security Status section.
+fn parse_checkpoint_statuses(html: &str) -> HashMap<String, bool> {
+    let mut statuses = HashMap::new();
+    let name_re = Regex::new(r"<strong>([\w/\-]+)</strong>(\s*TSA Pre)?").unwrap();
 
-    let hours_re = Regex::new(r"const tHours = \{([\s\S]*?)\};").unwrap();
-    let hours_block = match hours_re.captures(js_content) {
-        Some(cap) => cap[1].to_string(),
-        None => return schedules,
-    };
+    for block in html.split("garage with-msg") {
+        if let Some(cap) = name_re.captures(block) {
+            let base = &cap[1];
+            let is_pre = cap.get(2).is_some();
+            let terminal = if is_pre {
+                format!("{} TSA Pre", base)
+            } else {
+                base.to_string()
+            };
 
-    let entry_re =
-        Regex::new(r"'(\w+)':\s*\{\s*'open':\s*'(\d{2}):(\d{2})',\s*'close':\s*'(\d{2}):(\d{2})'")
-            .unwrap();
+            let is_open = block.contains("nu-open");
+            let is_closed = block.contains("nu-closed");
 
-    for cap in entry_re.captures_iter(&hours_block) {
-        let key = cap[1].to_string();
-        schedules.insert(
-            key,
-            Schedule {
-                open_hour: cap[2].parse().unwrap_or(0),
-                open_min: cap[3].parse().unwrap_or(0),
-                close_hour: cap[4].parse().unwrap_or(0),
-                close_min: cap[5].parse().unwrap_or(0),
-            },
-        );
+            if is_open || is_closed {
+                statuses.insert(terminal, is_open);
+            }
+        }
     }
 
-    schedules
+    statuses
 }
 
 #[derive(Deserialize)]
@@ -133,7 +88,7 @@ struct WaitTimeRange {
 struct AppState {
     client: Client,
     api_url: String,
-    js_url: String,
+    page_url: String,
 }
 
 async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
@@ -167,32 +122,28 @@ async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
     registry.register(Box::new(open_gauge.clone())).unwrap();
     registry.register(Box::new(scrape_success.clone())).unwrap();
 
-    let now = chrono::Utc::now().with_timezone(&New_York);
-    let hour = now.hour();
-    let minute = now.minute();
-
-    // Fetch schedule and wait times concurrently
-    let (js_result, api_result) = tokio::join!(
-        state.client.get(&state.js_url).send(),
+    // Fetch page HTML and wait times concurrently
+    let (page_result, api_result) = tokio::join!(
+        state.client.get(&state.page_url).send(),
         state.client.get(&state.api_url).send(),
     );
 
-    let schedules: HashMap<String, Schedule> = match js_result {
+    let checkpoint_statuses: HashMap<String, bool> = match page_result {
         Ok(resp) => match resp.text().await {
-            Ok(text) => {
-                let parsed = parse_schedules(&text);
+            Ok(html) => {
+                let parsed = parse_checkpoint_statuses(&html);
                 if parsed.is_empty() {
-                    warn!("Failed to parse schedules from wait-api.js, using defaults");
+                    warn!("Failed to parse checkpoint statuses from HTML, defaulting to open");
                 }
                 parsed
             }
             Err(e) => {
-                warn!("Failed to read wait-api.js response: {}", e);
+                warn!("Failed to read PHL page response: {}", e);
                 HashMap::new()
             }
         },
         Err(e) => {
-            warn!("Failed to fetch wait-api.js: {}", e);
+            warn!("Failed to fetch PHL page: {}", e);
             HashMap::new()
         }
     };
@@ -217,9 +168,11 @@ async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
     };
 
     for cp in CHECKPOINTS {
-        let default_sched = cp.default_schedule();
-        let schedule = schedules.get(cp.schedule_key).unwrap_or(&default_sched);
-        let is_open = schedule.is_open(hour, minute);
+        // Use HTML status if available, default to open if HTML parsing failed
+        let is_open = checkpoint_statuses
+            .get(cp.terminal)
+            .copied()
+            .unwrap_or(true);
 
         open_gauge
             .with_label_values(&[cp.terminal])
@@ -265,7 +218,7 @@ async fn main() {
         .unwrap_or(DEFAULT_PORT);
 
     let api_url = std::env::var("PHL_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string());
-    let js_url = std::env::var("PHL_JS_URL").unwrap_or_else(|_| DEFAULT_JS_URL.to_string());
+    let page_url = std::env::var("PHL_PAGE_URL").unwrap_or_else(|_| DEFAULT_PAGE_URL.to_string());
 
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
@@ -275,7 +228,7 @@ async fn main() {
     let state = AppState {
         client,
         api_url,
-        js_url,
+        page_url,
     };
 
     let app = Router::new()
@@ -297,14 +250,14 @@ mod tests {
     use axum::http::Request;
     use tower::ServiceExt;
 
-    fn make_app(api_url: &str, js_url: &str) -> Router {
+    fn make_app(api_url: &str, page_url: &str) -> Router {
         let state = AppState {
             client: Client::builder()
                 .timeout(Duration::from_secs(5))
                 .build()
                 .unwrap(),
             api_url: api_url.to_string(),
-            js_url: js_url.to_string(),
+            page_url: page_url.to_string(),
         };
         Router::new()
             .route("/metrics", get(metrics_handler))
@@ -312,129 +265,103 @@ mod tests {
             .with_state(state)
     }
 
-    #[test]
-    fn schedule_open_during_hours() {
-        let s = Schedule {
-            open_hour: 5,
-            open_min: 0,
-            close_hour: 22,
-            close_min: 0,
-        };
-        assert!(s.is_open(12, 0));
+    fn sample_html(statuses: &[(&str, bool)]) -> String {
+        let mut html = String::new();
+        for (name, is_open) in statuses {
+            let (terminal_html, status_html) = if name.contains("TSA Pre") {
+                let base = name.replace(" TSA Pre", "");
+                let term = format!(
+                    r#"<a class="term-link">Terminal <strong>{}</strong> TSA Pre✓</a>"#,
+                    base
+                );
+                let status = if *is_open {
+                    r#"<div class="status nu-open"><span>3</span> mins</div>"#.to_string()
+                } else {
+                    r#"<span class="status nu-closed">Closed</span>"#.to_string()
+                };
+                (term, status)
+            } else {
+                let term = format!(
+                    r#"<a class="term-link">Terminal <strong>{}</strong></a>"#,
+                    name
+                );
+                let status = if *is_open {
+                    r#"<div class="status nu-open"><span>3</span> mins</div>"#.to_string()
+                } else {
+                    r#"<span class="status nu-closed">Closed</span>"#.to_string()
+                };
+                (term, status)
+            };
+            html.push_str(&format!(
+                r#"<div class="garage with-msg"><div class="title-full"><div class="gtitle">{}</div><div class="gfull">{}</div></div></div>"#,
+                terminal_html, status_html
+            ));
+        }
+        html
     }
 
     #[test]
-    fn schedule_open_at_exact_open_time() {
-        let s = Schedule {
-            open_hour: 5,
-            open_min: 0,
-            close_hour: 22,
-            close_min: 0,
-        };
-        assert!(s.is_open(5, 0));
+    fn parse_statuses_mixed_open_closed() {
+        let html = sample_html(&[
+            ("A-West", false),
+            ("A-East", true),
+            ("A-East TSA Pre", true),
+            ("B", true),
+            ("C", false),
+            ("D/E", true),
+            ("D/E TSA Pre", true),
+            ("F", false),
+        ]);
+        let statuses = parse_checkpoint_statuses(&html);
+
+        assert_eq!(statuses.len(), 8);
+        assert_eq!(statuses["A-West"], false);
+        assert_eq!(statuses["A-East"], true);
+        assert_eq!(statuses["A-East TSA Pre"], true);
+        assert_eq!(statuses["B"], true);
+        assert_eq!(statuses["C"], false);
+        assert_eq!(statuses["D/E"], true);
+        assert_eq!(statuses["D/E TSA Pre"], true);
+        assert_eq!(statuses["F"], false);
     }
 
     #[test]
-    fn schedule_closed_one_minute_before_open() {
-        let s = Schedule {
-            open_hour: 5,
-            open_min: 0,
-            close_hour: 22,
-            close_min: 0,
-        };
-        assert!(!s.is_open(4, 59));
+    fn parse_statuses_all_closed() {
+        let html = sample_html(&[
+            ("A-West", false),
+            ("A-East", false),
+            ("B", false),
+            ("C", false),
+            ("D/E", false),
+            ("F", false),
+        ]);
+        let statuses = parse_checkpoint_statuses(&html);
+        assert!(statuses.values().all(|&v| !v));
     }
 
     #[test]
-    fn schedule_closed_at_exact_close_time() {
-        let s = Schedule {
-            open_hour: 5,
-            open_min: 0,
-            close_hour: 22,
-            close_min: 0,
-        };
-        assert!(!s.is_open(22, 0));
+    fn parse_statuses_all_open() {
+        let html = sample_html(&[
+            ("A-West", true),
+            ("A-East", true),
+            ("B", true),
+            ("C", true),
+            ("D/E", true),
+            ("F", true),
+        ]);
+        let statuses = parse_checkpoint_statuses(&html);
+        assert!(statuses.values().all(|&v| v));
     }
 
     #[test]
-    fn schedule_closed_after_hours() {
-        let s = Schedule {
-            open_hour: 5,
-            open_min: 0,
-            close_hour: 22,
-            close_min: 0,
-        };
-        assert!(!s.is_open(23, 30));
-    }
-
-    #[test]
-    fn schedule_closed_when_open_equals_close() {
-        let s = Schedule {
-            open_hour: 5,
-            open_min: 0,
-            close_hour: 5,
-            close_min: 0,
-        };
-        assert!(!s.is_open(5, 0));
-        assert!(!s.is_open(12, 0));
-    }
-
-    #[test]
-    fn schedule_open_with_non_zero_minutes() {
-        let s = Schedule {
-            open_hour: 4,
-            open_min: 15,
-            close_hour: 18,
-            close_min: 30,
-        };
-        assert!(s.is_open(4, 15));
-        assert!(!s.is_open(4, 14));
-        assert!(s.is_open(18, 29));
-        assert!(!s.is_open(18, 30));
+    fn parse_statuses_empty_on_bad_input() {
+        assert!(parse_checkpoint_statuses("").is_empty());
+        assert!(parse_checkpoint_statuses("garbage html").is_empty());
     }
 
     #[test]
     fn all_checkpoints_defined() {
         assert_eq!(CHECKPOINTS.len(), 8);
-    }
-
-    #[test]
-    fn parse_schedules_from_js() {
-        let js = r#"
-            const tHours = {
-                'tA': { 'open': '05:00', 'close': '22:15', },
-                'tAe': { 'open': '04:15', 'close': '22:15', },
-                'tC': { 'open': '04:15', 'close': '04:15', },
-            };
-            const tPre = {
-                'tAe': { 'open': '04:15', 'close': '18:00', },
-            };
-        "#;
-        let schedules = parse_schedules(js);
-        assert_eq!(schedules.len(), 3);
-
-        let ta = schedules.get("tA").unwrap();
-        assert_eq!(ta.open_hour, 5);
-        assert_eq!(ta.open_min, 0);
-        assert_eq!(ta.close_hour, 22);
-        assert_eq!(ta.close_min, 15);
-        assert!(ta.is_open(12, 0));
-
-        // tC has open == close, should be closed
-        let tc = schedules.get("tC").unwrap();
-        assert!(!tc.is_open(12, 0));
-
-        // tPre entries should NOT be in the result (only tHours)
-        // tAe should have tHours values, not tPre values
-        let tae = schedules.get("tAe").unwrap();
-        assert_eq!(tae.close_hour, 22);
-        assert_eq!(tae.close_min, 15);
-    }
-
-    #[test]
-    fn parse_schedules_empty_on_bad_input() {
-        assert!(parse_schedules("garbage").is_empty());
-        assert!(parse_schedules("").is_empty());
     }
 
     #[test]
@@ -493,23 +420,20 @@ mod tests {
     async fn metrics_endpoint_with_mock_api() {
         let mock_server = wiremock::MockServer::start().await;
 
-        // Mock the wait-api.js endpoint with a schedule where tA is closed
-        let js_body = r#"
-            const tHours = {
-                'tA': { 'open': '00:00', 'close': '00:00', },
-                'tAe': { 'open': '00:00', 'close': '23:59', },
-                'tAepre': { 'open': '00:00', 'close': '23:59', },
-                'tB': { 'open': '00:00', 'close': '23:59', },
-                'tC': { 'open': '00:00', 'close': '00:00', },
-                'tDE': { 'open': '00:00', 'close': '23:59', },
-                'tDEpre': { 'open': '00:00', 'close': '23:59', },
-                'tF': { 'open': '00:00', 'close': '00:00', },
-            };
-        "#;
+        let html_body = sample_html(&[
+            ("A-West", false),
+            ("A-East", true),
+            ("A-East TSA Pre", true),
+            ("B", true),
+            ("C", false),
+            ("D/E", true),
+            ("D/E TSA Pre", true),
+            ("F", false),
+        ]);
 
         wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path("/wait-api.js"))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(js_body))
+            .and(wiremock::matchers::path("/"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(html_body))
             .mount(&mock_server)
             .await;
 
@@ -522,8 +446,9 @@ mod tests {
                         "columns": [],
                         "rows": [
                             [4377, 15.5, {"lower_bound": 13, "upper_bound": 18}],
-                            [4368, 28.0, {"lower_bound": 25, "upper_bound": 30}],
-                            [5047, 10.0, {"lower_bound": 8, "upper_bound": 13}]
+                            [4368, 3.0, {"lower_bound": 1, "upper_bound": 5}],
+                            [5047, 14.0, {"lower_bound": 12, "upper_bound": 16}],
+                            [5052, 2.0, {"lower_bound": 1, "upper_bound": 4}]
                         ]
                     }
                 })),
@@ -533,7 +458,7 @@ mod tests {
 
         let app = make_app(
             &format!("{}/phllivereach/metrics", mock_server.uri()),
-            &format!("{}/wait-api.js", mock_server.uri()),
+            &mock_server.uri(),
         );
         let response = app
             .oneshot(
@@ -552,17 +477,19 @@ mod tests {
         let body_str = String::from_utf8(body.to_vec()).unwrap();
 
         assert!(body_str.contains("phl_scrape_success 1"));
-        // A-West (tA) should be closed (open==close)
+        // Closed checkpoints
         assert!(body_str.contains(r#"phl_checkpoint_open{terminal="A-West"} 0"#));
-        // A-West should NOT have a wait time since it's closed
-        assert!(!body_str.contains(r#"phl_checkpoint_wait_minutes{terminal="A-West"}"#));
-        // A-East should be open and have wait time
-        assert!(body_str.contains(r#"phl_checkpoint_open{terminal="A-East"} 1"#));
-        assert!(body_str.contains(r#"phl_checkpoint_wait_minutes{terminal="A-East"} 28"#));
-        // C (tC) should be closed
         assert!(body_str.contains(r#"phl_checkpoint_open{terminal="C"} 0"#));
-        // F (tF) should be closed
         assert!(body_str.contains(r#"phl_checkpoint_open{terminal="F"} 0"#));
+        // Closed checkpoints should NOT have wait times
+        assert!(!body_str.contains(r#"phl_checkpoint_wait_minutes{terminal="A-West"}"#));
+        assert!(!body_str.contains(r#"phl_checkpoint_wait_minutes{terminal="C"}"#));
+        assert!(!body_str.contains(r#"phl_checkpoint_wait_minutes{terminal="F"}"#));
+        // Open checkpoints
+        assert!(body_str.contains(r#"phl_checkpoint_open{terminal="A-East"} 1"#));
+        assert!(body_str.contains(r#"phl_checkpoint_open{terminal="B"} 1"#));
+        assert!(body_str.contains(r#"phl_checkpoint_wait_minutes{terminal="A-East"} 3"#));
+        assert!(body_str.contains(r#"phl_checkpoint_wait_minutes{terminal="B"} 14"#));
     }
 
     #[tokio::test]
