@@ -91,6 +91,25 @@ struct AppState {
     page_url: String,
 }
 
+/// Attempts to fetch and parse wait time data from the PHL API.
+async fn fetch_api_wait_times(client: &Client, api_url: &str) -> Result<HashMap<u64, f64>, String> {
+    let resp = client
+        .get(api_url)
+        .send()
+        .await
+        .map_err(|e| format!("fetch failed: {}", e))?;
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("status={} body read failed: {}", status, e))?;
+    let data: PhlResponse = serde_json::from_str(&body).map_err(|e| {
+        let truncated: String = body.chars().take(500).collect();
+        format!("status={} parse error={} body={}", status, e, truncated)
+    })?;
+    Ok(data.content.rows.iter().map(|r| (r.0, r.1)).collect())
+}
+
 async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
     let registry = Registry::new();
 
@@ -125,7 +144,7 @@ async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
     // Fetch page HTML and wait times concurrently
     let (page_result, api_result) = tokio::join!(
         state.client.get(&state.page_url).send(),
-        state.client.get(&state.api_url).send(),
+        fetch_api_wait_times(&state.client, &state.api_url),
     );
 
     let checkpoint_statuses: HashMap<String, bool> = match page_result {
@@ -149,41 +168,25 @@ async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
     };
 
     let wait_times: HashMap<u64, f64> = match api_result {
-        Ok(resp) => {
-            let status = resp.status();
-            match resp.text().await {
-                Ok(body) => match serde_json::from_str::<PhlResponse>(&body) {
-                    Ok(data) => {
-                        scrape_success.set(1.0);
-                        data.content.rows.iter().map(|r| (r.0, r.1)).collect()
-                    }
-                    Err(e) => {
-                        let truncated: String = body.chars().take(500).collect();
-                        warn!(
-                            status = %status,
-                            error = %e,
-                            body = %truncated,
-                            "Failed to parse PHL API response"
-                        );
-                        scrape_success.set(0.0);
-                        HashMap::new()
-                    }
-                },
-                Err(e) => {
-                    warn!(
-                        status = %status,
-                        error = %e,
-                        "Failed to read PHL API response body"
-                    );
+        Ok(data) => {
+            scrape_success.set(1.0);
+            data
+        }
+        Err(first_err) => {
+            info!(error = %first_err, "PHL API fetch failed, retrying in 1s");
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            match fetch_api_wait_times(&state.client, &state.api_url).await {
+                Ok(data) => {
+                    info!("PHL API retry succeeded");
+                    scrape_success.set(1.0);
+                    data
+                }
+                Err(retry_err) => {
+                    warn!(error = %retry_err, "PHL API retry also failed");
                     scrape_success.set(0.0);
                     HashMap::new()
                 }
             }
-        }
-        Err(e) => {
-            warn!("Failed to fetch PHL API: {}", e);
-            scrape_success.set(0.0);
-            HashMap::new()
         }
     };
 
@@ -536,6 +539,68 @@ mod tests {
 
         assert!(body_str.contains("phl_scrape_success 0"));
         assert!(body_str.contains("phl_checkpoint_open"));
+    }
+
+    #[tokio::test]
+    async fn metrics_endpoint_retries_on_empty_api_response() {
+        let mock_server = wiremock::MockServer::start().await;
+
+        let html_body = sample_html(&[("A-East", true)]);
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(html_body))
+            .mount(&mock_server)
+            .await;
+
+        // Valid response (lower priority — registered first)
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/phllivereach/metrics"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "result": {"success": true, "httpCode": 200},
+                    "content": {
+                        "columns": [],
+                        "rows": [
+                            [4368, 5.0, {"lower_bound": 3, "upper_bound": 7}]
+                        ]
+                    }
+                })),
+            )
+            .mount(&mock_server)
+            .await;
+
+        // Empty {} response (higher priority — registered last), consumed after 1 hit
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/phllivereach/metrics"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("{}"))
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+
+        let app = make_app(
+            &format!("{}/phllivereach/metrics", mock_server.uri()),
+            &mock_server.uri(),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+        let body = axum::body::to_bytes(response.into_body(), 1_000_000)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+
+        // Retry should have succeeded
+        assert!(body_str.contains("phl_scrape_success 1"));
+        assert!(body_str.contains(r#"phl_checkpoint_wait_minutes{terminal="A-East"} 5"#));
     }
 
     #[tokio::test]
