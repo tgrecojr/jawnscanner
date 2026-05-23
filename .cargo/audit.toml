@@ -1,0 +1,10 @@
+# cargo-audit configuration
+# See https://github.com/rustsec/rustsec/tree/main/cargo-audit#configuration
+#
+# To allowlist an advisory, add it to the ignore list with a comment
+# explaining why it is acceptable:
+#
+# [advisories]
+# ignore = [
+#   # "RUSTSEC-YYYY-NNNN",  # reason: <why this is acceptable>
+# ]
