@@ -9,7 +9,7 @@ Prometheus exporter that tracks TSA security checkpoint wait times at PHL (Phila
 - HTTP Client: reqwest (rustls)
 - Metrics: prometheus crate
 - Runtime: tokio
-- Container: distroless (gcr.io/distroless/cc-debian12:nonroot)
+- Container: distroless (gcr.io/distroless/cc-debian13:nonroot)
 
 ## Commands
 - `cargo build --release` — Build optimized binary

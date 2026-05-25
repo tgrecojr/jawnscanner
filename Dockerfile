@@ -1,4 +1,4 @@
-FROM debian:bookworm-slim@sha256:0104b334637a5f19aa9c983a91b54c89887c0984081f2068983107a6f6c21eeb AS builder
+FROM debian:trixie-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
@@ -21,7 +21,7 @@ RUN rm -rf src
 COPY src ./src
 RUN touch src/main.rs && cargo build --release
 
-FROM gcr.io/distroless/cc-debian12:nonroot@sha256:bd2899c12b335c827750ccf2359879eab09c09b206023dcebea408947d54127c
+FROM gcr.io/distroless/cc-debian13:nonroot
 
 COPY --from=builder /app/target/release/jawnscanner /
 
