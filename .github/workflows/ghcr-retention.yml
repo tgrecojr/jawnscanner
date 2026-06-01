@@ -26,13 +26,17 @@ jobs:
           min-versions-to-keep: 5
           ignore-versions: '^latest$'
 
-      # Step 2: Explicit cleanup of untagged versions (build cache layers,
-      # orphaned manifests). Keeps the 5 most recent untagged for safety.
-      - name: Prune untagged only (keep last 5 untagged)
-        uses: actions/delete-package-versions@v5
-        continue-on-error: true
+      # Step 2: cosign-/attestation-aware cleanup of untagged versions.
+      # docker-publish pushes a cosign signature + SBOM/provenance attestations
+      # as extra untagged referrer manifests; deleting an image cascade-deletes
+      # its referrers, so the generic delete-package-versions action then tries
+      # to delete a child manifest GHCR already removed ("Package version not
+      # found"). dataaxiom safely handles multi-arch, attestation, and Sigstore
+      # cosign referrers.
+      - name: Prune untagged (cosign/attestation aware, keep last 5)
+        uses: dataaxiom/ghcr-cleanup-action@v1.2.1
         with:
-          package-name: ${{ github.event.repository.name }}
-          package-type: container
-          min-versions-to-keep: 5
-          delete-only-untagged-versions: 'true'
+          package: ${{ github.event.repository.name }}
+          delete-untagged: true
+          keep-n-untagged: 5
+          token: ${{ secrets.GITHUB_TOKEN }}
