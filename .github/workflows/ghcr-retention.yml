@@ -34,7 +34,7 @@ jobs:
       # found"). dataaxiom safely handles multi-arch, attestation, and Sigstore
       # cosign referrers.
       - name: Prune untagged (cosign/attestation aware, keep last 5)
-        uses: dataaxiom/ghcr-cleanup-action@v1.2.1
+        uses: dataaxiom/ghcr-cleanup-action@v1.2.2
         with:
           package: ${{ github.event.repository.name }}
           delete-untagged: true
