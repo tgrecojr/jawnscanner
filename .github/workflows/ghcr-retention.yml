@@ -13,30 +13,12 @@ jobs:
   prune:
     name: Prune old GHCR versions
     runs-on: ubuntu-latest
+    concurrency:
+      group: ghcr-cleanup-${{ github.repository }}
     steps:
-      # Step 1: Prune from the full version pool, but preserve `latest`.
-      # Always keeps the 5 most recent versions regardless of tag, so the
-      # last 5 sha-* tagged builds survive for rollback.
-      - name: Prune tagged + untagged (keep latest + last 5)
-        uses: actions/delete-package-versions@v5
-        continue-on-error: true
+      - name: Prune GHCR (keep latest + 5 most recent tagged)
+        uses: dataaxiom/ghcr-cleanup-action@v1.2.0
         with:
-          package-name: ${{ github.event.repository.name }}
-          package-type: container
-          min-versions-to-keep: 5
-          ignore-versions: '^latest$'
-
-      # Step 2: cosign-/attestation-aware cleanup of untagged versions.
-      # docker-publish pushes a cosign signature + SBOM/provenance attestations
-      # as extra untagged referrer manifests; deleting an image cascade-deletes
-      # its referrers, so the generic delete-package-versions action then tries
-      # to delete a child manifest GHCR already removed ("Package version not
-      # found"). dataaxiom safely handles multi-arch, attestation, and Sigstore
-      # cosign referrers.
-      - name: Prune untagged (cosign/attestation aware, keep last 5)
-        uses: dataaxiom/ghcr-cleanup-action@v1.2.2
-        with:
-          package: ${{ github.event.repository.name }}
+          keep-n-tagged: 5
+          exclude-tags: latest
           delete-untagged: true
-          keep-n-untagged: 5
-          token: ${{ secrets.GITHUB_TOKEN }}
