@@ -11,7 +11,7 @@ services:
     restart: unless-stopped
 
   prometheus:
-    image: prom/prometheus:latest@sha256:69f5241418838263316593f7274a304b095c40bcf22e57272865da91bd60a8ac
+    image: prom/prometheus:latest@sha256:a75c5a35bc21d7afe69551eefa3cb1e1fb1775fe759408007a66b54ec3de1f29
     ports:
       - "9090:9090"
     volumes:
