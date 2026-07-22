@@ -4,7 +4,12 @@ on:
   workflow_call:
     secrets:
       SOCKET_SECURITY_API_KEY:
-        required: true
+        # Not marked required: bot-authored PRs (Dependabot security updates,
+        # Renovate) run in an isolated context without access to repo secrets.
+        # With required: true the reusable-workflow call fails before any job
+        # runs; required: false lets the rest of the scan run, and the Socket
+        # step below self-skips when the secret is absent.
+        required: false
 
 jobs:
   scan:
@@ -12,12 +17,16 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # Job-level env so the Socket step's `if:` can test for the secret's
+    # presence (a step's own env isn't visible to its own `if:`, and the
+    # `secrets` context can't be referenced in an `if:` directly).
+    env:
+      SOCKET_SECURITY_API_KEY: ${{ secrets.SOCKET_SECURITY_API_KEY }}
     steps:
       - uses: actions/checkout@v7
 
       - name: Socket Security scan
-        env:
-          SOCKET_SECURITY_API_KEY: ${{ secrets.SOCKET_SECURITY_API_KEY }}
+        if: ${{ env.SOCKET_SECURITY_API_KEY != '' }}
         run: |
           repo_slug="${GITHUB_REPOSITORY##*/}"
           branch_name="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
