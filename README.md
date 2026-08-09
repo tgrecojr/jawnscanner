@@ -58,13 +58,31 @@ phl_scrape_success 1
 The easiest way to get everything running — JawnScanner, Prometheus, and Grafana:
 
 ```bash
+cp .env.example .env
+# Edit .env and set GRAFANA_ADMIN_PASSWORD to a password you choose.
 docker compose up -d
 ```
 
+Grafana's admin password is read from `GRAFANA_ADMIN_PASSWORD` in your
+uncommitted `.env` file. It has no default — `docker compose up` fails fast if
+the variable is unset, rather than falling back to a weak password.
+
 Then open:
-- **Grafana**: http://localhost:3000 (login: `admin` / `admin`)
+- **Grafana**: http://localhost:3000 (login: `admin` / the password you set in `.env`)
 - **Prometheus**: http://localhost:9090
 - **JawnScanner metrics**: http://localhost:9101/metrics
+
+Grafana is published on `127.0.0.1` only, so the admin UI is reachable from the
+Docker host but not from the wider network.
+
+> **Upgrading an existing deployment?** Grafana stores the admin password in its
+> own database on first boot, so it is kept in the `grafana_data` volume and
+> setting `GRAFANA_ADMIN_PASSWORD` will *not* change it. Rotate an existing
+> install explicitly:
+>
+> ```bash
+> docker compose exec grafana grafana cli admin reset-admin-password "$GRAFANA_ADMIN_PASSWORD"
+> ```
 
 To import the included dashboard, go to Grafana > Dashboards > Import > Upload `grafana/dashboard.json` and select your Prometheus datasource.
 
