@@ -37,16 +37,112 @@ jobs:
             --report \
             ./
 
-      - name: OSV scan (cargo lockfiles)
+      # --- OSV scanning -------------------------------------------------------
+      # Two modes, chosen by event:
+      #   * pull_request: DIFF mode. Scan the base branch's Cargo.lock and the
+      #     PR's Cargo.lock, then fail only on vulnerabilities the PR
+      #     *introduces*. An advisory that lands against a dependency already
+      #     on main no longer blocks unrelated PRs (what stalled #130/#131/#132
+      #     on RUSTSEC-2026-0382/0383).
+      #   * push to main / schedule: ABSOLUTE mode. Fail on any known
+      #     vulnerability so main's state stays visible. ci.yml calls this
+      #     workflow on a weekly schedule for exactly that purpose.
+      #
+      # The lockfile is named explicitly in diff mode rather than scanned with
+      # --recursive, because the base-branch copy lives under .osv-base/ inside
+      # the workspace and a recursive scan of ./ would pick it up too. The copy
+      # sits beside a copy of osv-scanner.toml so OSV-Scanner applies the same
+      # ignore list to both sides.
+      #
+      # Both scanner invocations exit non-zero when they find vulnerabilities,
+      # so they run with continue-on-error and the reporter step decides the
+      # verdict. A scan that fails outright writes no JSON; the "both scans
+      # completed" check refuses to compare in that case rather than passing a
+      # broken scan as clean. All files live in the workspace: the scanner and
+      # reporter are Docker actions that mount only $GITHUB_WORKSPACE.
+
+      - name: Fetch base-branch lockfile (PR diff mode)
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "${BASE_REF}"
+          mkdir -p .osv-base
+          git show "FETCH_HEAD:Cargo.lock" > .osv-base/Cargo.lock
+          # Per-lockfile ignore list; tolerate its absence on the base branch.
+          git show "FETCH_HEAD:osv-scanner.toml" > .osv-base/osv-scanner.toml 2>/dev/null || rm -f .osv-base/osv-scanner.toml
+
+      - name: OSV scan base lockfile (PR diff mode)
+        id: scan-old
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: google/osv-scanner-action/osv-scanner-action@v2.7.0
+        continue-on-error: true
+        with:
+          scan-args: |-
+            --format=json
+            --output-file=osv-old.json
+            --lockfile=.osv-base/Cargo.lock
+
+      - name: OSV scan PR lockfile (PR diff mode)
+        id: scan-new
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: google/osv-scanner-action/osv-scanner-action@v2.7.0
+        continue-on-error: true
+        with:
+          scan-args: |-
+            --format=json
+            --output-file=osv-new.json
+            --lockfile=Cargo.lock
+
+      - name: Check that both scans completed (PR diff mode)
+        if: ${{ github.event_name == 'pull_request' && (steps.scan-old.outcome == 'failure' || steps.scan-new.outcome == 'failure') }}
+        env:
+          OLD_RESULTS: osv-old.json
+          NEW_RESULTS: osv-new.json
+        run: |
+          status=0
+          if [ ! -s "${OLD_RESULTS}" ]; then
+            echo "::error::OSV-Scanner failed on the base lockfile without writing results."
+            status=1
+          fi
+          if [ ! -s "${NEW_RESULTS}" ]; then
+            echo "::error::OSV-Scanner failed on this PR's lockfile without writing results."
+            status=1
+          fi
+          exit "${status}"
+
+      - name: Report vulnerabilities introduced by this PR
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: google/osv-scanner-action/osv-reporter-action@v2.7.0
+        with:
+          scan-args: |-
+            --output=osv-results.sarif
+            --old=osv-old.json
+            --new=osv-new.json
+            --gh-annotations=true
+            --fail-on-vuln=true
+
+      - name: OSV scan (absolute, main / scheduled)
+        if: ${{ github.event_name != 'pull_request' }}
         uses: google/osv-scanner-action/osv-scanner-action@v2.7.0
         with:
           scan-args: |-
             --recursive
             ./
 
+      # --- cargo audit (absolute runs only) -----------------------------------
+      # Runs with the absolute OSV pass, never on pull requests. OSV diff mode
+      # above already scans Cargo.lock against the RustSec advisories, so an
+      # absolute cargo audit here would fail every open PR the day an advisory
+      # lands against a crate already on main. On main and the weekly schedule
+      # it stays as a second reader of the same lockfile. The toolchain and
+      # install steps are gated too so a PR run skips all three.
       - uses: dtolnay/rust-toolchain@stable
+        if: ${{ github.event_name != 'pull_request' }}
 
       - uses: taiki-e/install-action@cargo-audit
+        if: ${{ github.event_name != 'pull_request' }}
 
       - name: cargo audit
+        if: ${{ github.event_name != 'pull_request' }}
         run: cargo audit
