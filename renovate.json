@@ -13,7 +13,7 @@
     "before 5am every weekday",
     "every weekend"
   ],
-  "prConcurrentLimit": 3,
+  "prConcurrentLimit": 6,
   "prCreation": "immediate",
   "rebaseWhen": "behind-base-branch",
   "automerge": true,
