@@ -215,6 +215,10 @@ cargo fmt
 6. If the homepage is unreachable, all checkpoints default to open
 7. If the wait time API is unreachable, `phl_scrape_success` is set to `0`
 
+## Contributing
+
+Issues and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) first.
+
 ## License
 
-MIT
+Released under the [MIT License](LICENSE).
