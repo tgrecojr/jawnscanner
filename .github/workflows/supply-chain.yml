@@ -75,7 +75,7 @@ jobs:
       - name: OSV scan base lockfile (PR diff mode)
         id: scan-old
         if: ${{ github.event_name == 'pull_request' }}
-        uses: google/osv-scanner-action/osv-scanner-action@v2.7.0
+        uses: google/osv-scanner-action/osv-scanner-action@v2.7.1
         continue-on-error: true
         with:
           scan-args: |-
@@ -86,7 +86,7 @@ jobs:
       - name: OSV scan PR lockfile (PR diff mode)
         id: scan-new
         if: ${{ github.event_name == 'pull_request' }}
-        uses: google/osv-scanner-action/osv-scanner-action@v2.7.0
+        uses: google/osv-scanner-action/osv-scanner-action@v2.7.1
         continue-on-error: true
         with:
           scan-args: |-
@@ -113,7 +113,7 @@ jobs:
 
       - name: Report vulnerabilities introduced by this PR
         if: ${{ github.event_name == 'pull_request' }}
-        uses: google/osv-scanner-action/osv-reporter-action@v2.7.0
+        uses: google/osv-scanner-action/osv-reporter-action@v2.7.1
         with:
           scan-args: |-
             --output=osv-results.sarif
@@ -124,7 +124,7 @@ jobs:
 
       - name: OSV scan (absolute, main / scheduled)
         if: ${{ github.event_name != 'pull_request' }}
-        uses: google/osv-scanner-action/osv-scanner-action@v2.7.0
+        uses: google/osv-scanner-action/osv-scanner-action@v2.7.1
         with:
           scan-args: |-
             --recursive
